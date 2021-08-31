@@ -6,7 +6,6 @@ import android.content.pm.PackageManager;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.os.Bundle;
-import android.os.Handler;
 import android.text.InputType;
 import android.util.Log;
 import android.view.View;
@@ -32,15 +31,9 @@ import java.util.Date;
 public class MainActivity extends AppCompatActivity implements View.OnClickListener {
 
     // Permission variables
-    public static final int WRITE_PERMISSION = 101;
+    public static final int PERMISSION_REQUEST_CODE = 101;
     private final ArrayList<Integer> RSSI_list = new ArrayList<Integer>(); // Keeps track of the RSSI values
-    // Measurement period in milliseconds
-    private final int measurePeriod = 500;
-    // Preview period in milliseconds
-    private final int previewPeriod = 250;
-    private final Handler handler = new Handler();    // Handler and runnable to create recurring measuring
-    private Runnable rssiRunnable;
-    private Runnable rssiPreviewRunnable;
+    private RSSIScanner scanner;
     // Keeps track of the amount of samples
     private int numSamples = 0;
     private boolean hasPerms = false; // Check whether RSSI preview can start
@@ -98,32 +91,40 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         buttonSave.setOnClickListener(this);
 
         // Create recurring measurement + update
-        rssiRunnable = () -> {
-            int newRSSI = getWiFiRSSI();
-
-            this.addRSSIMeasurement(newRSSI);
-
-            handler.postDelayed(rssiRunnable, measurePeriod);
-
-            Log.d("Runnable", "RSSI measured: " + newRSSI);
-        };
-
-        rssiPreviewRunnable = () -> {
-            int receivedRSSI = getWiFiRSSI();
-
-            this.updateRSSIPreview(receivedRSSI);
-
-            handler.postDelayed(rssiPreviewRunnable, previewPeriod);
-        };
+        scanner = new RSSIScanner(this, () -> {
+            int RSSI = getWiFiRSSI();
+            if (measureIsOn) {
+                this.addRSSIMeasurement(RSSI);
+            }
+            this.updateRSSIPreview(RSSI);
+            Log.d("Runnable", "RSSI measured: " + RSSI);
+        });
 
         // Check if permission has been granted already, if not requests for permission
-        hasPerms = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
+        hasPerms = ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+            && ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+
         if (!hasPerms) {
-            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, WRITE_PERMISSION);
+            ActivityCompat.requestPermissions(this, new String[] {
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                    Manifest.permission.ACCESS_FINE_LOCATION
+            }, PERMISSION_REQUEST_CODE);
         }
 
         // Needs WiFi access which is given before app boots
-        handler.postDelayed(rssiPreviewRunnable, previewPeriod);
+        updateRSSIPreview(getWiFiRSSI());
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        scanner.startScanning(this);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        scanner.stopScanning(this);
     }
 
     // Requests for permission to write to external storage (to store the RSSI values)
@@ -131,11 +132,11 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         // If request is cancelled, the result array is empty.
-        if (requestCode == WRITE_PERMISSION) {
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                if (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED) {
-                    Log.d("Permission", "Permission has been granted");
-                }
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+            if (grantResults.length == 2
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED
+                    && grantResults[1] == PackageManager.PERMISSION_GRANTED) {
+                Log.d("Permission", "Permission has been granted");
             } else {
                 finish();
                 System.exit(0);
@@ -169,12 +170,10 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                     buttonStart.setText("Stop Measuring");
                     buttonSave.setEnabled(false);
                     buttonClear.setEnabled(false);
-                    handler.postDelayed(rssiRunnable, measurePeriod);
                     measureIsOn = true;
                 } else {
                     Log.d("Runnable", "Runnable stopped");
                     buttonStart.setText("Start Measuring");
-                    handler.removeCallbacks(rssiRunnable);
                     buttonSave.setEnabled(true);
                     buttonClear.setEnabled(true);
                     measureIsOn = false;
